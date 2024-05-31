@@ -10,12 +10,12 @@ The script will then update the datastore to use the managed identity (MSI) of t
 
 Install required packages:
 
-```
+```cmd
 pip install azure-core azure-identity azure-mgmt-authorization azure-mgmt-resource azure-mgmt-storage azureml-core
 ```
 
 Usage:
 
-```
-python storage_account_migrate.py  -s SUBSCRIPTION_ID [-r RESOURCE_GROUP] [-w WORKSPACE_NAME] [-log LOGLEVEL] [-h]
+```cmd
+python disable_account_key_for_datastores.py.py  -s SUBSCRIPTION_ID [-r RESOURCE_GROUP] [-w WORKSPACE_NAME] [-log LOGLEVEL] [-h]
 ```
