@@ -19,3 +19,9 @@ Usage:
 ```cmd
 python disable_account_key_for_datastores.py.py  -s SUBSCRIPTION_ID [-r RESOURCE_GROUP] [-w WORKSPACE_NAME] [-log LOGLEVEL] [-h]
 ```
+
+Known issue:
+
+Datastore client will show following WARNING message when try to enable MSI access to the storage account, it is expected.
+
+"WARNING:azureml.data.datastore_client:You do not have permissions to check whether the Workspace Managed Identity has access to the Storage Account....We will try to grant Reader and Storage Blob Data Reader role to the Workspace Managed Identity for the storage account."
