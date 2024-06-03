@@ -11,7 +11,7 @@ The script will then update the datastore to use the managed identity (MSI) of t
 Install required packages:
 
 ```cmd
-pip install azure-core azure-identity azure-mgmt-authorization azure-mgmt-resource azure-mgmt-storage azureml-core
+pip install azure-ai-ml azure-core azure-identity azure-mgmt-authorization azure-mgmt-resource azure-mgmt-storage azureml-core
 ```
 
 Usage:
