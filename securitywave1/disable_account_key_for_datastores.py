@@ -15,6 +15,7 @@ import logging
 import uuid
 from pathlib import Path
 
+from azure.ai.ml import MLClient
 from azure.core.exceptions import ResourceExistsError
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.authorization import AuthorizationManagementClient
@@ -209,12 +210,12 @@ def migrate_by_workspace(subscription_id, resource_group_name, workspace_name):
 
 
 def migrate_by_resource_group(subscription_id, resource_group_name, workspace_name):
-    # get all workspace in this resource group
+    # Get all workspace in this resource group except the 'hub' workspace
     workspace_names = []
     if workspace_name is None:
-        workspace_names = Workspace.list(
-            subscription_id=subscription_id, resource_group=resource_group_name
-        )
+        client = MLClient(DefaultAzureCredential(), subscription_id, resource_group_name)
+        workspace = client.workspaces.list()
+        workspace_names = [ws.name for ws in workspace if ws._kind != "hub"]
     else:
         workspace_names.append(workspace_name)
 
