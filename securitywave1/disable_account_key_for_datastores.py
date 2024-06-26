@@ -6,9 +6,9 @@
 #            also grant MSI the 'Storage Blob Data Contributor' role to that storage account.
 
 # Usage:
-#       python storage_account_migrate.py  -s SUBSCRIPTION_ID [-r RESOURCE_GROUP] [-w WORKSPACE_NAME] [-log LOGLEVEL] [-h]
+#       python disable_account_key_for_datastores.py  -s SUBSCRIPTION_ID [-r RESOURCE_GROUP] [-w WORKSPACE_NAME] [-log LOGLEVEL] [-h]
 
-# version: 0.1.0
+# version: 0.2.0
 
 import argparse
 import logging
