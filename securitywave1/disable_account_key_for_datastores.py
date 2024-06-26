@@ -212,8 +212,8 @@ def migrate_by_workspace(subscription_id, resource_group_name, workspace_name):
 def migrate_by_resource_group(subscription_id, resource_group_name, workspace_name):
     # Get all workspace in this resource group except the 'hub' workspace
     workspace_names = []
+    client = MLClient(DefaultAzureCredential(), subscription_id, resource_group_name)
     if workspace_name is None:
-        client = MLClient(DefaultAzureCredential(), subscription_id, resource_group_name)
         workspace = client.workspaces.list()
         workspace_names = [ws.name for ws in workspace if ws._kind != "hub"]
     else:
@@ -224,6 +224,11 @@ def migrate_by_resource_group(subscription_id, resource_group_name, workspace_na
         logger.info(message)
         print(message)
         migrate_by_workspace(subscription_id, resource_group_name, workspace_name)
+
+        # Migrate the workspace to use identity-based authentication
+        ws = client.workspaces.get(name=workspace_name)
+        ws.system_datastores_auth_mode = "identity"
+        ws = client.workspaces.begin_update(workspace=ws).result()
 
 
 def main(args):
