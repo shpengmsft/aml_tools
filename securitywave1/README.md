@@ -29,3 +29,15 @@ Datastore client will show following WARNING message when try to enable MSI acce
 ### Update History
 
 v 0.2 - set workspace's "systemDatastoresAuthMode" to "identity".
+
+## storage_account_with_account_key_enabled.py v 0.1
+
+### Description:
+
+This script lists all storage accounts in a subscription or a resource group that allow shared key access.
+
+### Usage
+
+```cmd
+python storage_account_with_account_key_enabled.py -s <subscription_id> [-r <resource_group>] [-a] [-l <loglevel>]
+```
