@@ -22,3 +22,12 @@ Install required Python packages
 `python list_asset_release -p 'environment/llm'` -v
 
 Above script will show the more details about last environment/llm build release.
+
+## list_assets_build.py
+
+This script is used to list the successful asset builds.
+
+### Usage
+
+`python list_assets_build.py -p 'llm-rag'`
+Above command will show the last 3 build that with build pattern 'llm-rag'
