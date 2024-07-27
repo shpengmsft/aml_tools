@@ -14,8 +14,7 @@ if personal_access_token is None:
 # Azure DevOps org URL and Asset Release/Build definition ID
 organization_url = "https://dev.azure.com/msdata"
 Project_Name = "Vienna"
-AzureML_Assets_Release_Definition_ID = 2346
-AzureML_Assets_Build_Definition_ID = 25490
+AzureML_Assets_Build_Definition_ID = 37266
 Main_Branch_Name = "refs/heads/main"
 
 Last_N_Build = 3
