@@ -29,11 +29,7 @@ from pathlib import Path
 
 from azure.ai.ml import MLClient
 from azure.ai.ml.entities import BuildContext, Environment
-from azure.identity import (
-    AzureCliCredential,
-    ChainedTokenCredential,
-    DeviceCodeCredential,
-)
+from azure.identity import DefaultAzureCredential
 
 # Default values
 SUBSCRIPTION_ID = "921496dc-987f-410f-bd57-426eb2611356"
@@ -42,7 +38,7 @@ RESOURCE_GROUP = "rag-release-validation-rg"
 WORKSPACE_NAME = "rag-release-validation-ws"
 
 CUSTOM_ENVIRONMENT_NAME = "custom-llm-embedding-env"
-BASE_ENVIRONMENT = "mcr.microsoft.com/azureml/curated/llm-rag-embeddings"
+BASE_ENVIRONMENT = "mcr.microsoft.com/azureml/promptflow/promptflow-runtime"
 
 
 def main(
@@ -54,7 +50,7 @@ def main(
     environment_name: str,
 ) -> None:
     """Create a custom environment with given Dockerfile and/or wheel packages."""
-    credential = ChainedTokenCredential(AzureCliCredential(), DeviceCodeCredential())
+    credential = DefaultAzureCredential()
 
     ml_client = MLClient(
         credential=credential,
