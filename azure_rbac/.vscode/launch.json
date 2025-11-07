@@ -1,0 +1,49 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": "${command:pickArgs}"
+        },
+        {
+            "name": "Launch Python File (select)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/${input:scriptFile}",
+            "args": "${input:pickArgs}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "scriptFile",
+            "type": "pickString",
+            "description": "Select the Python script to debug",
+            "options": [
+                "generate_cleanup_candidates.py",
+                "list_users_in_group.py",
+                "list_users_roles.py",
+                "remove_role_assignments.py",
+                "rbac_utils.py"
+            ]
+        },
+        {
+            "id": "pickArgs",
+            "type": "pickString",
+            "description": "Select the parameters",
+            "options": [
+                "--subscription-id '921496dc-987f-410f-bd57-426eb2611356' --csv dup_roles.csv",
+                "--csv dup_roles.csv --dry-run",
+                "--csv dup_roles.csv --no-dry-run"
+            ]
+        }
+    ]
+}
