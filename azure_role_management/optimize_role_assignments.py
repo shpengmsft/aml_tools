@@ -12,6 +12,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("azure").setLevel(logging.WARNING)
 
 
 def get_graph_token(credential):
@@ -190,12 +191,18 @@ def main():
         "--output-csv",
         help="Path to output CSV file with redundant assignments.",
     )
+    parser.add_argument(
+        "--max-candidates",
+        type=int,
+        help="Stop after finding this many redundant assignments.",
+    )
     parser.set_defaults(dry_run=True)
 
     args = parser.parse_args()
     subscription_id = args.subscription_id
     dry_run = args.dry_run
     output_csv = args.output_csv
+    max_candidates = args.max_candidates
 
     credential = DefaultAzureCredential()
 
@@ -245,6 +252,23 @@ def main():
         role_def_id = user_ra.role_definition_id.lower()
         scope = user_ra.scope.lower()
 
+        # First check whether any group assignment exists for this role at this
+        # scope or a parent scope. If not, avoid an expensive Graph lookup.
+        possible_covering_assignments = []
+        parent_scopes = get_parent_scopes(scope)
+        for check_scope in parent_scopes:
+            check_scope = check_scope.lower()
+            potential_group_assignments = group_assignments_map.get(
+                (check_scope, role_def_id), []
+            )
+            if potential_group_assignments:
+                possible_covering_assignments.append(
+                    (check_scope, potential_group_assignments)
+                )
+
+        if not possible_covering_assignments:
+            continue
+
         # Get user's groups (with caching)
         if user_id not in user_groups_cache:
             role_name_for_log = get_role_name(user_ra.role_definition_id, auth_client)
@@ -256,15 +280,7 @@ def main():
         user_member_groups = user_groups_cache[user_id]
         user_name = user_name_cache[user_id]
 
-        # Check this scope and all parent scopes for a matching group assignment
-        parent_scopes = get_parent_scopes(scope)
-
-        for check_scope in parent_scopes:
-            check_scope = check_scope.lower()
-            potential_group_assignments = group_assignments_map.get(
-                (check_scope, role_def_id), []
-            )
-
+        for check_scope, potential_group_assignments in possible_covering_assignments:
             assigned_group_ids = set(
                 ra.principal_id for ra in potential_group_assignments
             )
@@ -296,6 +312,10 @@ def main():
                     f"Covered by Group(s) {covering_group_names} on scope {check_scope}"
                 )
                 break  # Found a covering group, no need to check further up
+
+        if max_candidates and len(redundant_assignments) >= max_candidates:
+            logger.info(f"Reached max candidates limit: {max_candidates}")
+            break
 
     logger.info(f"Found {len(redundant_assignments)} redundant assignments.")
 

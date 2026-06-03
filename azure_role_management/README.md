@@ -49,6 +49,7 @@ This script identifies users who have a direct role assignment on a resource (or
 *   `--subscription-id`: The Azure Subscription ID. Defaults to `921496dc-987f-410f-bd57-426eb2611356`.
 *   `--execute`: If provided, the script will perform the deletions. If omitted, it runs in dry-run mode.
 *   `--output-csv`: Path to a CSV file to write the redundant assignments to.
+*   `--max-candidates`: Optional limit for the number of redundant assignments to find before stopping. Useful for bounded cleanup batches.
 
 ---
 
