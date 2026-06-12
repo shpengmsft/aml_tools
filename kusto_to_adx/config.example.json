@@ -1,0 +1,12 @@
+{
+  "cluster_uri": "https://shpeng-uksouth-adx.uksouth.kusto.windows.net",
+  "database": "ToolLatencyDashboards",
+  "target_table": "LatencyDashboardMetrics",
+  "target_timestamp_column": "BucketStart",
+  "kql": "examples/latency-dashboard-aggregation.kql",
+  "auth": "az-cli",
+  "lookback_minutes": 60,
+  "window_minutes": 60,
+  "bucket_minutes": 10,
+  "write_watermark_for_backfill": false
+}
