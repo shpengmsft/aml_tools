@@ -31,10 +31,13 @@ DEFAULT_CLUSTER_URI = "https://shpeng-uksouth-adx.uksouth.kusto.windows.net"
 DEFAULT_DATABASE = "ToolLatencyDashboards"
 DEFAULT_TEMPLATE = Path(__file__).with_name("examples").joinpath("latency-dashboard-aggregation.kql")
 DEFAULT_BUCKET_MINUTES = 10
-DEFAULT_LOOKBACK_MINUTES = 60
-DEFAULT_WINDOW_MINUTES = 60
+DEFAULT_LOOKBACK_MINUTES = 90
+DEFAULT_WINDOW_MINUTES = 30
 DEFAULT_TARGET_TABLE = "LatencyDashboardMetrics"
 DEFAULT_TARGET_TIMESTAMP_COLUMN = "BucketStart"
+
+# Retry configuration removed - not useful for data quality issues
+
 
 COMMAND_MARKERS = (
     ".set-or-append LatencyDashboardMetrics <|",
@@ -345,6 +348,19 @@ def response_row_count(primary_results: Iterable[object]) -> int:
     return total
 
 
+def execute_command(
+    client: KustoClient,
+    database: str,
+    command: str,
+    table_name: str,
+) -> int:
+    """Execute a management command and return the number of rows written."""
+    response = client.execute_mgmt(database, command)
+    rows = response_row_count(response.primary_results)
+    print(f"{table_name} succeeded; response rows={rows}")
+    return rows
+
+
 def normalize_config_key(key: str) -> str:
     return key.replace("-", "_")
 
@@ -480,9 +496,12 @@ def main() -> None:
                 print(f"{command.table} skipped for backfill window")
                 continue
             deduped_command = add_dedup_filter(command, window)
-            response = client.execute_mgmt(args.database, deduped_command)
-            rows = response_row_count(response.primary_results)
-            print(f"{command.table} succeeded; response rows={rows}")
+            execute_command(
+                client,
+                args.database,
+                deduped_command,
+                command.table,
+            )
 
 
 if __name__ == "__main__":

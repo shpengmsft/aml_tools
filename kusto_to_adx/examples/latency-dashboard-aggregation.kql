@@ -15,6 +15,19 @@ let SourceSpan = cluster("https://aoaiagents1.westus.kusto.windows.net").databas
 let IncludeDimension = (selected:dynamic, value:string) {
     set_has_element(selected, "__all__") or set_has_element(selected, value)
 };
+let pathologicalTraceSpanThreshold = 1000;
+let PathologicalTraceIds = materialize(
+    SourceSpan
+    | where TIMESTAMP between (aggregationStart .. aggregationEnd)
+    | extend
+        TraceId = tostring(column_ifexists("env_dt_traceId", "")),
+        Service = tostring(column_ifexists("service.name", ""))
+    | where isnotempty(TraceId)
+    | where Service in ("agentsv2", "tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
+    | summarize SpanCount = count() by TraceId
+    | where SpanCount > pathologicalTraceSpanThreshold
+    | project TraceId
+);
 
 let RapiSpanCandidates = materialize(
         SourceSpan
@@ -37,6 +50,7 @@ let RapiSpanCandidates = materialize(
                 toint(tostring(column_ifexists("status_code", ""))),
                 toint(tostring(column_ifexists("StatusCode", ""))),
                 toint(tostring(column_ifexists("status", ""))))
+        | where TraceId !in (PathologicalTraceIds)
         | where Service in ("tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
         | extend
             IsToolServerGetTools = Service in ("tool-server", "agents-tool-server")
@@ -112,6 +126,7 @@ let ToolboxCandidates = materialize(
                 toint(tostring(column_ifexists("status_code", ""))),
                 toint(tostring(column_ifexists("StatusCode", ""))),
                 toint(tostring(column_ifexists("status", ""))))
+        | where TraceId !in (PathologicalTraceIds)
         | where Service in ("agentsv2", "tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
         | extend McpMethod = case(
             isnotempty(McpMethodRaw), McpMethodRaw,
