@@ -9,6 +9,8 @@ let deploymentTime = datetime(2026-06-05T00:00:00Z);
 let bucketSize = 10m;
 let rapiSourceQueryHash = "sha256:a6ef86cbf9a7fa45aab82b8df6308def29903f499b61de77ccf8df06eefcd441";
 let toolboxSourceQueryHash = "sha256:7014a6d9fd263713a365ec2e6e3be0f1d25a375e1b2110a50842a5df9f7ffacb";
+let toolboxToolsCallSourceQueryHash = "sha256:3b057f86a38105274647157dcf80cb3af4ecfe55fb02c2c457c5e8089162620a";
+let toolboxToolsCallAllSourceQueryHash = "sha256:8e6b4ca8f20a2ee7e0e0a9e3edfd94a0c3d7b0cde2f01f3c72ed0df7d4f7c7a1";
 let selectedRegions = dynamic(["__all__"]);
 let selectedEnvironments = dynamic(["__all__"]);
 let SourceSpan = cluster("https://aoaiagents1.westus.kusto.windows.net").database("prod").Span;
@@ -189,8 +191,9 @@ let ToolboxFlow = materialize(
         | extend DownstreamToolServerMs = min_of(iff(AgentCallCount > 0, AgentToolServerMs, iff(ServerCallCount > 0, ToolServerMs, 0.0)), EndToEndMs)
         | extend EffectiveToolServerMs = min_of(iff(ServerCallCount > 0, ToolServerMs, 0.0), DownstreamToolServerMs)
         | extend EffectiveRemoteMcpMs = min_of(coalesce(RemoteMcpMs, 0.0), EffectiveToolServerMs)
+        | extend HasDownstreamSpan = AgentCallCount > 0 or ServerCallCount > 0
         | extend
-            AgentsHopMs = max_of(EndToEndMs - DownstreamToolServerMs, 0.0),
+            AgentsHopMs = iff(HasDownstreamSpan, max_of(EndToEndMs - DownstreamToolServerMs, 0.0), real(null)),
             CrossServiceGapMs = max_of(DownstreamToolServerMs - EffectiveToolServerMs, 0.0),
             ToolServerHopMs = max_of(EffectiveToolServerMs - EffectiveRemoteMcpMs, 0.0),
             Status = iff(StatusCode between (200 .. 299) or isempty(tostring(StatusCode)), "success", "error")
@@ -202,6 +205,216 @@ let SourceToolboxToolsListRaw = materialize(
         (ToolboxFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "02 Agents-Tool Server gap", LatencyMs = CrossServiceGapMs, EndToEndMs),
         (ToolboxFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "03 Tool Server overhead", LatencyMs = ToolServerHopMs, EndToEndMs),
         (ToolboxFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "04 Remote MCP/tools-list", LatencyMs = EffectiveRemoteMcpMs, EndToEndMs)
+);
+let ToolboxToolsCallCandidates = materialize(
+        SourceSpan
+        | where TIMESTAMP between (aggregationStart .. aggregationEnd)
+        | extend
+            TraceId = tostring(column_ifexists("env_dt_traceId", "")),
+            SpanId = tostring(column_ifexists("env_dt_spanId", "")),
+            Service = tostring(column_ifexists("service.name", "")),
+            Region = tostring(column_ifexists("cloud.region", "")),
+            Environment = coalesce(tostring(column_ifexists("deployment.environment", "")), tostring(column_ifexists("deployment.environment.name", ""))),
+            Name = tostring(column_ifexists("name", "")),
+            Path = tostring(column_ifexists("url.path", "")),
+            Route = tostring(column_ifexists("http.route", "")),
+            Method = tostring(column_ifexists("http.request.method", "")),
+            McpMethodRaw = tostring(column_ifexists("mcp.method", "")),
+            McpMethodName = tostring(column_ifexists("mcp.method.name", "")),
+            McpMethodAlt = tostring(column_ifexists("mcp_method", "")),
+            RpcMethod = tostring(column_ifexists("rpc.method", "")),
+            UrlFull = tostring(column_ifexists("url.full", "")),
+            Target = tostring(column_ifexists("target", "")),
+            StartTime = todatetime(column_ifexists("startTime", "")),
+            StatusCode = coalesce(
+                toint(tostring(column_ifexists("http.response.status_code", ""))),
+                toint(tostring(column_ifexists("status_code", ""))),
+                toint(tostring(column_ifexists("StatusCode", ""))),
+                toint(tostring(column_ifexists("status", ""))))
+        | where Service in ("agentsv2", "tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
+        | extend McpMethod = case(
+            isnotempty(McpMethodRaw), McpMethodRaw,
+            isnotempty(McpMethodName), McpMethodName,
+            isnotempty(McpMethodAlt), McpMethodAlt,
+            RpcMethod)
+        | extend
+            IsEntry = Service == "agentsv2" and Method == "POST" and McpMethod == "tools/call"
+                and (Name has "/toolboxes/" and Name has "/mcp"
+                    or Path has "/toolboxes/" and Path has "/mcp"
+                    or Route has "/toolboxes/{toolboxName}/mcp"),
+            IsAgentToolServer = Service == "agentsv2" and Method == "POST" and Name has "toolsets/" and Name has "/mcp",
+            IsToolServer = Service in ("tool-server", "agents-tool-server")
+                and (Name == "POST /toolsets/{tool_set_name}/mcp"
+                    or (Method == "POST" and ((Path has "/toolsets/" and Path has "/mcp") or Route == "/toolsets/{tool_set_name}/mcp"))),
+            IsRemoteMcp = Service in ("tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
+                and (UrlFull has "mcp.ai.azure.com"
+                    or UrlFull has "mcp.dev.azure.com"
+                    or UrlFull has "mcp.management.azure.com"
+                    or UrlFull has ".fabric.microsoft.com/v1/mcp/"
+                    or UrlFull has "workiq.svc.cloud.microsoft/mcp"
+                    or UrlFull has ".workiq.svc.cloud.dev.microsoft/mcp")
+        | where IsEntry or IsAgentToolServer or IsToolServer or IsRemoteMcp
+        | extend DurationMs = todouble(datetime_diff("millisecond", TIMESTAMP, StartTime))
+        | where isnotempty(TraceId)
+        | where isfinite(DurationMs) and DurationMs >= 0
+        | project TIMESTAMP, TraceId, SpanId, Region, Environment, StartTime, StatusCode, DurationMs, IsEntry, IsAgentToolServer, IsToolServer, IsRemoteMcp
+);
+let ToolboxToolsCallEntries = materialize(
+        ToolboxToolsCallCandidates
+        | where IsEntry
+        | where IncludeDimension(selectedRegions, Region)
+        | where IncludeDimension(selectedEnvironments, Environment)
+        | extend RequestId = strcat(TraceId, ":", iff(isnotempty(SpanId), SpanId, tostring(StartTime)))
+        | summarize
+            Timestamp = min(StartTime),
+            EntryEnd = max(TIMESTAMP),
+            EntryMs = max(DurationMs),
+            StatusCode = max(StatusCode),
+            Region = take_any(Region),
+            Environment = take_any(Environment)
+          by RequestId, TraceId
+);
+let ToolboxToolsCallChildren = materialize(
+        ToolboxToolsCallCandidates
+        | where IsAgentToolServer or IsToolServer or IsRemoteMcp
+        | project TraceId, ChildStart = StartTime, ChildDurationMs = DurationMs, IsAgentToolServer, IsToolServer, IsRemoteMcp
+);
+let ToolboxToolsCallFlow = materialize(
+        ToolboxToolsCallEntries
+        | join kind=leftouter ToolboxToolsCallChildren on TraceId
+        | where isnull(ChildStart) or ChildStart between (Timestamp .. EntryEnd)
+        | summarize
+            AgentToolServerMs = sumif(ChildDurationMs, IsAgentToolServer),
+            ToolServerMs = sumif(ChildDurationMs, IsToolServer),
+            RemoteMcpMs = sumif(ChildDurationMs, IsRemoteMcp),
+            AgentCallCount = countif(IsAgentToolServer),
+            ServerCallCount = countif(IsToolServer)
+          by RequestId, Timestamp, EntryMs, StatusCode, Region, Environment
+        | extend EndToEndMs = EntryMs
+        | where isfinite(EndToEndMs) and EndToEndMs > 0
+        | extend DownstreamToolServerMs = min_of(iff(AgentCallCount > 0, AgentToolServerMs, iff(ServerCallCount > 0, ToolServerMs, 0.0)), EndToEndMs)
+        | extend EffectiveToolServerMs = min_of(iff(ServerCallCount > 0, ToolServerMs, 0.0), DownstreamToolServerMs)
+        | extend EffectiveRemoteMcpMs = min_of(coalesce(RemoteMcpMs, 0.0), EffectiveToolServerMs)
+        | extend HasDownstreamSpan = AgentCallCount > 0 or ServerCallCount > 0
+        | extend
+            AgentsHopMs = iff(HasDownstreamSpan, max_of(EndToEndMs - DownstreamToolServerMs, 0.0), real(null)),
+            CrossServiceGapMs = max_of(DownstreamToolServerMs - EffectiveToolServerMs, 0.0),
+            ToolServerHopMs = max_of(EffectiveToolServerMs - EffectiveRemoteMcpMs, 0.0),
+            ServiceOverheadMs = max_of(EndToEndMs - EffectiveRemoteMcpMs, 0.0),
+            Status = iff(StatusCode between (200 .. 299) or isempty(tostring(StatusCode)), "success", "error")
+);
+let SourceToolboxToolsCallRaw = materialize(
+    union
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "00 EndToEnd", LatencyMs = EndToEndMs, EndToEndMs),
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "01 Agents overhead", LatencyMs = AgentsHopMs, EndToEndMs),
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "02 Agents-Tool server gap", LatencyMs = CrossServiceGapMs, EndToEndMs),
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "03 Tool server overhead", LatencyMs = ToolServerHopMs, EndToEndMs),
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "04 Remote MCP/tools-call", LatencyMs = EffectiveRemoteMcpMs, EndToEndMs),
+        (ToolboxToolsCallFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "05 Service overhead total", LatencyMs = ServiceOverheadMs, EndToEndMs)
+);
+
+let ToolboxToolsCallAllCandidates = materialize(
+        SourceSpan
+        | where TIMESTAMP between (aggregationStart .. aggregationEnd)
+        | extend
+            TraceId = tostring(column_ifexists("env_dt_traceId", "")),
+            SpanId = tostring(column_ifexists("env_dt_spanId", "")),
+            Service = tostring(column_ifexists("service.name", "")),
+            Region = tostring(column_ifexists("cloud.region", "")),
+            Environment = coalesce(tostring(column_ifexists("deployment.environment", "")), tostring(column_ifexists("deployment.environment.name", ""))),
+            Name = tostring(column_ifexists("name", "")),
+            Path = tostring(column_ifexists("url.path", "")),
+            Route = tostring(column_ifexists("http.route", "")),
+            Method = tostring(column_ifexists("http.request.method", "")),
+            McpMethodRaw = tostring(column_ifexists("mcp.method", "")),
+            McpMethodName = tostring(column_ifexists("mcp.method.name", "")),
+            McpMethodAlt = tostring(column_ifexists("mcp_method", "")),
+            RpcMethod = tostring(column_ifexists("rpc.method", "")),
+            UrlFull = tostring(column_ifexists("url.full", "")),
+            Target = tostring(column_ifexists("target", "")),
+            StartTime = todatetime(column_ifexists("startTime", "")),
+            StatusCode = coalesce(
+                toint(tostring(column_ifexists("http.response.status_code", ""))),
+                toint(tostring(column_ifexists("status_code", ""))),
+                toint(tostring(column_ifexists("StatusCode", ""))),
+                toint(tostring(column_ifexists("status", ""))))
+        | where Service in ("agentsv2", "tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
+        | extend McpMethod = case(
+            isnotempty(McpMethodRaw), McpMethodRaw,
+            isnotempty(McpMethodName), McpMethodName,
+            isnotempty(McpMethodAlt), McpMethodAlt,
+            RpcMethod)
+        | extend
+            IsEntry = Service == "agentsv2" and Method == "POST" and McpMethod == "tools/call"
+                and (Name has "/toolboxes/" and Name has "/mcp"
+                    or Path has "/toolboxes/" and Path has "/mcp"
+                    or Route has "/toolboxes/{toolboxName}/mcp"),
+            IsAgentToolServer = Service == "agentsv2" and Method == "POST" and Name has "toolsets/" and Name has "/mcp",
+            IsToolServer = Service in ("tool-server", "agents-tool-server")
+                and (Name == "POST /toolsets/{tool_set_name}/mcp"
+                    or (Method == "POST" and ((Path has "/toolsets/" and Path has "/mcp") or Route == "/toolsets/{tool_set_name}/mcp"))),
+            IsRemoteMcp = Service in ("tool-server", "agents-tool-server", "tool-server-py", "agents-tool-server-py")
+                and (UrlFull contains "mcp"
+                    or Target contains "mcp"
+                    or Name has_any ("RemoteMCP", "RemoteA2A", "ListToolManifests"))
+        | where IsEntry or IsAgentToolServer or IsToolServer or IsRemoteMcp
+        | extend DurationMs = todouble(datetime_diff("millisecond", TIMESTAMP, StartTime))
+        | where isnotempty(TraceId)
+        | where isfinite(DurationMs) and DurationMs >= 0
+        | project TIMESTAMP, TraceId, SpanId, Region, Environment, StartTime, StatusCode, DurationMs, IsEntry, IsAgentToolServer, IsToolServer, IsRemoteMcp
+);
+let ToolboxToolsCallAllEntries = materialize(
+        ToolboxToolsCallAllCandidates
+        | where IsEntry
+        | where IncludeDimension(selectedRegions, Region)
+        | where IncludeDimension(selectedEnvironments, Environment)
+        | extend RequestId = strcat(TraceId, ":", iff(isnotempty(SpanId), SpanId, tostring(StartTime)))
+        | summarize
+            Timestamp = min(StartTime),
+            EntryEnd = max(TIMESTAMP),
+            EntryMs = max(DurationMs),
+            StatusCode = max(StatusCode),
+            Region = take_any(Region),
+            Environment = take_any(Environment)
+          by RequestId, TraceId
+);
+let ToolboxToolsCallAllChildren = materialize(
+        ToolboxToolsCallAllCandidates
+        | where IsAgentToolServer or IsToolServer or IsRemoteMcp
+        | project TraceId, ChildStart = StartTime, ChildDurationMs = DurationMs, IsAgentToolServer, IsToolServer, IsRemoteMcp
+);
+let ToolboxToolsCallAllFlow = materialize(
+        ToolboxToolsCallAllEntries
+        | join kind=leftouter ToolboxToolsCallAllChildren on TraceId
+        | where isnull(ChildStart) or ChildStart between (Timestamp .. EntryEnd)
+        | summarize
+            AgentToolServerMs = sumif(ChildDurationMs, IsAgentToolServer),
+            ToolServerMs = sumif(ChildDurationMs, IsToolServer),
+            RemoteMcpMs = sumif(ChildDurationMs, IsRemoteMcp),
+            AgentCallCount = countif(IsAgentToolServer),
+            ServerCallCount = countif(IsToolServer)
+          by RequestId, Timestamp, EntryMs, StatusCode, Region, Environment
+        | extend EndToEndMs = EntryMs
+        | where isfinite(EndToEndMs) and EndToEndMs > 0
+        | extend DownstreamToolServerMs = min_of(iff(AgentCallCount > 0, AgentToolServerMs, iff(ServerCallCount > 0, ToolServerMs, 0.0)), EndToEndMs)
+        | extend EffectiveToolServerMs = min_of(iff(ServerCallCount > 0, ToolServerMs, 0.0), DownstreamToolServerMs)
+        | extend EffectiveRemoteMcpMs = min_of(coalesce(RemoteMcpMs, 0.0), EffectiveToolServerMs)
+        | extend HasDownstreamSpan = AgentCallCount > 0 or ServerCallCount > 0
+        | extend
+            AgentsHopMs = iff(HasDownstreamSpan, max_of(EndToEndMs - DownstreamToolServerMs, 0.0), real(null)),
+            CrossServiceGapMs = max_of(DownstreamToolServerMs - EffectiveToolServerMs, 0.0),
+            ToolServerHopMs = max_of(EffectiveToolServerMs - EffectiveRemoteMcpMs, 0.0),
+            ServiceOverheadMs = max_of(EndToEndMs - EffectiveRemoteMcpMs, 0.0),
+            Status = iff(StatusCode between (200 .. 299) or isempty(tostring(StatusCode)), "success", "error")
+);
+let SourceToolboxToolsCallAllRaw = materialize(
+    union
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "00 EndToEnd", LatencyMs = EndToEndMs, EndToEndMs),
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "01 Agents overhead", LatencyMs = AgentsHopMs, EndToEndMs),
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "02 Agents-Tool server gap", LatencyMs = CrossServiceGapMs, EndToEndMs),
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "03 Tool server overhead", LatencyMs = ToolServerHopMs, EndToEndMs),
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "04 Remote MCP/tools-call", LatencyMs = EffectiveRemoteMcpMs, EndToEndMs),
+        (ToolboxToolsCallAllFlow | project RequestId, Timestamp, Environment, Region, Status, Segment = "05 Service overhead total", LatencyMs = ServiceOverheadMs, EndToEndMs)
 );
 
 let AggregateFlow = (
@@ -217,19 +430,21 @@ let AggregateFlow = (
         Environment = iff(isempty(Environment), "unknown", Environment),
         Region = iff(isempty(Region), "unknown", Region),
         Status = iff(isempty(Status), "unknown", Status),
+        // For remote MCP latency percentiles, ignore requests with no remote contribution.
+        LatencyForPercentile = iff(Segment startswith "04 Remote MCP/" and LatencyMs <= 0, real(null), LatencyMs),
         PctOfE2E = iff(Segment == "00 EndToEnd", real(null), 100.0 * LatencyMs / EndToEndMs)
     | summarize
         RequestCount = dcount(RequestId),
         ErrorCount = dcountif(RequestId, Status !in~ ("success", "ok", "200")),
-        P50Ms = percentile(LatencyMs, 50),
-        P90Ms = percentile(LatencyMs, 90),
-        P95Ms = percentile(LatencyMs, 95),
-        P99Ms = percentile(LatencyMs, 99),
+        P50Ms = percentile(LatencyForPercentile, 50),
+        P90Ms = percentile(LatencyForPercentile, 90),
+        P95Ms = percentile(LatencyForPercentile, 95),
+        P99Ms = percentile(LatencyForPercentile, 99),
         MaxMs = max(LatencyMs),
         AvgMs = avg(LatencyMs),
         AvgPctOfE2E = avg(PctOfE2E),
         TotalPctOfE2E = 100.0 * sum(LatencyMs) / sum(EndToEndMs),
-        LatencyTDigest = tdigest(LatencyMs)
+        LatencyTDigest = tdigest(LatencyForPercentile)
         by BucketStart, Environment, Region, Status, Segment
     | extend
         AvgPctOfE2E = iff(Segment == "00 EndToEnd", real(null), AvgPctOfE2E),
@@ -266,7 +481,9 @@ let AggregateFlow = (
 };
 union
     (AggregateFlow(SourceRapiGetToolsRaw, "rapi_get_tools_latency", "foundry-tools-rapi-get-tools-latency", rapiSourceQueryHash)),
-    (AggregateFlow(SourceToolboxToolsListRaw, "toolbox_mcp_tools_list_latency", "foundry-toolbox-mcp-tools-list-lat-v2", toolboxSourceQueryHash))
+    (AggregateFlow(SourceToolboxToolsListRaw, "toolbox_mcp_tools_list_latency", "foundry-toolbox-mcp-tools-list-lat-v2", toolboxSourceQueryHash)),
+    (AggregateFlow(SourceToolboxToolsCallRaw, "toolbox_mcp_tools_call_latency", "foundry-toolbox-mcp-tools-call-lat-v1", toolboxToolsCallSourceQueryHash)),
+    (AggregateFlow(SourceToolboxToolsCallAllRaw, "toolbox_mcp_tools_call_all_latency", "foundry-toolbox-mcp-tools-call-all-lat-v1", toolboxToolsCallAllSourceQueryHash))
 
 .set-or-append LatencyDashboardCacheMetrics <|
 let aggregationEnd = now();
@@ -278,30 +495,52 @@ let SourceSpan = cluster("https://aoaiagents1.westus.kusto.windows.net").databas
 let IncludeDimension = (selected:dynamic, value:string) {
     set_has_element(selected, "__all__") or set_has_element(selected, value)
 };
-SourceSpan
-| where TIMESTAMP between (aggregationStart .. aggregationEnd)
-| extend
-    Service = tostring(column_ifexists("service.name", "")),
-    Region = tostring(column_ifexists("cloud.region", "")),
-    Environment = coalesce(tostring(column_ifexists("deployment.environment", "")), tostring(column_ifexists("deployment.environment.name", ""))),
-    Name = tostring(column_ifexists("name", "")),
-    Path = tostring(column_ifexists("url.path", "")),
-    Route = tostring(column_ifexists("http.route", "")),
-    Method = tostring(column_ifexists("http.request.method", "")),
-    StartTime = todatetime(column_ifexists("startTime", "")),
-    CacheOutcome = tostring(column_ifexists("toolbox.tools_list.cache_outcome", ""))
-| where Service in ("tool-server", "agents-tool-server")
-| where Name == "POST /toolsets/{tool_set_name}/mcp"
-    or (Method == "POST" and ((Path has "/toolsets/" and Path has "/mcp") or Route == "/toolsets/{tool_set_name}/mcp"))
-| where isnotempty(CacheOutcome)
-| where IncludeDimension(selectedRegions, Region)
-| where IncludeDimension(selectedEnvironments, Environment)
-| extend
-    BucketStart = bin(StartTime, bucketSize),
-    DurationMs = todouble(datetime_diff("millisecond", TIMESTAMP, StartTime)),
-    Environment = iff(isempty(Environment), "unknown", Environment),
-    Region = iff(isempty(Region), "unknown", Region)
-| where isfinite(DurationMs) and DurationMs >= 0
+let CacheSpanCandidates = materialize(
+    SourceSpan
+    | where TIMESTAMP between (aggregationStart .. aggregationEnd)
+    | extend
+        Service = tostring(column_ifexists("service.name", "")),
+        Region = tostring(column_ifexists("cloud.region", "")),
+        Environment = coalesce(tostring(column_ifexists("deployment.environment", "")), tostring(column_ifexists("deployment.environment.name", ""))),
+        Name = tostring(column_ifexists("name", "")),
+        Path = tostring(column_ifexists("url.path", "")),
+        Route = tostring(column_ifexists("http.route", "")),
+        Method = tostring(column_ifexists("http.request.method", "")),
+        StartTime = todatetime(column_ifexists("startTime", "")),
+        RapiCacheOutcome = tostring(column_ifexists("rapi.get_tools.cache_outcome", "")),
+        ToolboxCacheOutcome = tostring(column_ifexists("toolbox.tools_list.cache_outcome", ""))
+    | where Service in ("tool-server", "agents-tool-server")
+    | extend
+        IsRapiGetTools = Name == "GET /tools" or (Method == "GET" and (Path == "/tools" or Route == "/tools")),
+        IsToolboxToolsList = Name == "POST /toolsets/{tool_set_name}/mcp"
+            or (Method == "POST" and ((Path has "/toolsets/" and Path has "/mcp") or Route == "/toolsets/{tool_set_name}/mcp"))
+    | where IsRapiGetTools or IsToolboxToolsList
+    | where IncludeDimension(selectedRegions, Region)
+    | where IncludeDimension(selectedEnvironments, Environment)
+    | extend
+        BucketStart = bin(StartTime, bucketSize),
+        DurationMs = todouble(datetime_diff("millisecond", TIMESTAMP, StartTime)),
+        Environment = iff(isempty(Environment), "unknown", Environment),
+        Region = iff(isempty(Region), "unknown", Region)
+    | where isfinite(DurationMs) and DurationMs >= 0
+);
+union
+    (CacheSpanCandidates
+        | where IsRapiGetTools and isnotempty(RapiCacheOutcome)
+        | extend
+            Flow = "rapi_get_tools_latency",
+            CacheName = "remote_mcp_tool_manifest_cache",
+            MetricName = "request.duration_by_outcome",
+            SourceTelemetry = "prod.Span rapi.get_tools.cache_outcome",
+            Outcome = RapiCacheOutcome),
+    (CacheSpanCandidates
+        | where IsToolboxToolsList and isnotempty(ToolboxCacheOutcome)
+        | extend
+            Flow = "toolbox_mcp_tools_list_latency",
+            CacheName = "toolbox_tools_list_cache",
+            MetricName = "request.duration_by_outcome",
+            SourceTelemetry = "prod.Span toolbox.tools_list.cache_outcome",
+            Outcome = ToolboxCacheOutcome)
 | summarize
     Count = count(),
     P50Ms = percentile(DurationMs, 50),
@@ -311,13 +550,9 @@ SourceSpan
     MaxMs = max(DurationMs),
     AvgMs = avg(DurationMs),
     ValueTDigest = tdigest(DurationMs)
-    by BucketStart, Environment, Region, Outcome = CacheOutcome
+    by BucketStart, Environment, Region, Flow, CacheName, MetricName, SourceTelemetry, Outcome
 | extend
     BucketSize = bucketSize,
-    Flow = "toolbox_mcp_tools_list_latency",
-    CacheName = "toolbox_tools_list_cache",
-    MetricName = "request.duration_by_outcome",
-    SourceTelemetry = "prod.Span toolbox.tools_list.cache_outcome",
     AggregatedAt = now()
 | project
     BucketStart,
@@ -343,6 +578,10 @@ SourceSpan
 let aggregationEnd = bin(now(), 10m);
 let rapiSourceQueryHash = "sha256:a6ef86cbf9a7fa45aab82b8df6308def29903f499b61de77ccf8df06eefcd441";
 let toolboxSourceQueryHash = "sha256:7014a6d9fd263713a365ec2e6e3be0f1d25a375e1b2110a50842a5df9f7ffacb";
+let toolboxToolsCallSourceQueryHash = "sha256:3b057f86a38105274647157dcf80cb3af4ecfe55fb02c2c457c5e8089162620a";
+let toolboxToolsCallAllSourceQueryHash = "sha256:8e6b4ca8f20a2ee7e0e0a9e3edfd94a0c3d7b0cde2f01f3c72ed0df7d4f7c7a1";
 union
     (print Flow = "rapi_get_tools_latency", LastSuccessfulBucketStart = aggregationEnd, LastAggregatedAt = now(), SourceQueryHash = rapiSourceQueryHash, Status = "success", Details = "scheduled aggregate complete from prod.Span"),
-    (print Flow = "toolbox_mcp_tools_list_latency", LastSuccessfulBucketStart = aggregationEnd, LastAggregatedAt = now(), SourceQueryHash = toolboxSourceQueryHash, Status = "success", Details = "scheduled aggregate complete from prod.Span")
+    (print Flow = "toolbox_mcp_tools_list_latency", LastSuccessfulBucketStart = aggregationEnd, LastAggregatedAt = now(), SourceQueryHash = toolboxSourceQueryHash, Status = "success", Details = "scheduled aggregate complete from prod.Span"),
+    (print Flow = "toolbox_mcp_tools_call_latency", LastSuccessfulBucketStart = aggregationEnd, LastAggregatedAt = now(), SourceQueryHash = toolboxToolsCallSourceQueryHash, Status = "success", Details = "scheduled aggregate complete from prod.Span"),
+    (print Flow = "toolbox_mcp_tools_call_all_latency", LastSuccessfulBucketStart = aggregationEnd, LastAggregatedAt = now(), SourceQueryHash = toolboxToolsCallAllSourceQueryHash, Status = "success", Details = "scheduled aggregate complete from prod.Span")
