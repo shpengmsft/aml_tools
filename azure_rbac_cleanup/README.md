@@ -12,7 +12,7 @@ Quick start
 1) Install dependencies (PowerShell):
 
 ```powershell
-python -m pip install -r q:\github\aml_tools\azure_rbac\requirements.txt
+python -m pip install -r q:\github\aml_tools\azure_rbac_cleanup\requirements.txt
 ```
 
 2) Authenticate
@@ -25,7 +25,7 @@ Important: the identity used must have permissions to list role assignments in t
 Generate candidates (scan)
 
 ```powershell
-python q:\github\aml_tools\azure_rbac\generate_cleanup_candidates.py --subscription-id "<SUBSCRIPTION_ID>" --csv dup_roles.csv
+python q:\github\aml_tools\azure_rbac_cleanup\generate_cleanup_candidates.py --subscription-id "<SUBSCRIPTION_ID>" --csv dup_roles.csv
 ```
 
 Options
@@ -58,10 +58,10 @@ Remove candidates (dry-run by default)
 
 ```powershell
 # Dry-run (default): prints actions
-python q:\github\aml_tools\azure_rbac\remove_role_assignments.py --csv dup_roles.csv
+python q:\github\aml_tools\azure_rbac_cleanup\remove_role_assignments.py --csv dup_roles.csv
 
 # To actually delete (be careful):
-python q:\github\aml_tools\azure_rbac\remove_role_assignments.py --csv dup_roles.csv --no-dry-run
+python q:\github\aml_tools\azure_rbac_cleanup\remove_role_assignments.py --csv dup_roles.csv --no-dry-run
 ```
 
 Notes about the remover
